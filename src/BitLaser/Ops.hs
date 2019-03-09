@@ -26,9 +26,18 @@ module BitLaser.Ops
   , multNoCarryL
   , pow2
   , xor
+  , bitOr
+  , bitAnd
+  , bitNot
+  , shiftRight
+  , shiftRightV
+  , shiftLeft
+  , shiftLeftV
+  , signFlip
   -- * Extendings bits
   , extendVar1Bit
   , extendVarNBit
+  , chop
   -- * Comparing variables
   , allDistinct
   , allEqualTo
@@ -437,22 +446,21 @@ add' v1 v2 use_carry | numBitsInVar v1 < numBitsInVar v2 = do
   v1' <- extendVarNBit v1 (numBitsInVar v2 - numBitsInVar v1)
   add' v1' v2 use_carry
 add' v1 v2 use_carry = do
-  st <- Arith get
+  st     <- Arith get
+  result <- int final_bits "add_xorext_result"
   if xorExtensionAllowed st
-    then addWithXorExtension v1 v2 use_carry
-    else addWithNoXorExtension v1 v2 use_carry
+    then addWithXorExtension v1 v2 result use_carry
+    else addWithNoXorExtension v1 v2 result use_carry
+  where final_bits = if use_carry then numBitsInVar v1 + 1 else numBitsInVar v1
 
-addWithXorExtension :: Var -> Var -> Bool -> Arith Var
-addWithXorExtension v1 v2 _ | numBitsInVar v1 /= numBitsInVar v2 =
+addWithXorExtension :: Var -> Var -> Var -> Bool -> Arith Var
+addWithXorExtension v1 v2 _ _ | numBitsInVar v1 /= numBitsInVar v2 =
   error $ "addwithNoXorExtension: number of bits must be the same, got " <> show
     (numBitsInVar v1, numBitsInVar v2)
-addWithXorExtension v1@(Var low1 _) (Var low2 _) use_carry = do
-  result <- int final_bits "add_xorext_result"
+addWithXorExtension v1@(Var low1 _) (Var low2 _) result use_carry = do
   go 0 result Nothing
   return result
  where
-  final_bits = if use_carry then numBitsInVar v1 + 1 else numBitsInVar v1
-
   go n result@(Var low3 high3) previous_overload | n <= numBitsInVar v1 - 1 = do
     let idx_low1 = n + low1
         idx_low2 = n + low2
@@ -518,17 +526,14 @@ addWithXorExtension v1@(Var low1 _) (Var low2 _) use_carry = do
 
   go _ _ _ = return ()
 
-addWithNoXorExtension :: Var -> Var -> Bool -> Arith Var
-addWithNoXorExtension v1 v2 _ | numBitsInVar v1 /= numBitsInVar v2 =
+addWithNoXorExtension :: Var -> Var -> Var -> Bool -> Arith Var
+addWithNoXorExtension v1 v2 _ _ | numBitsInVar v1 /= numBitsInVar v2 =
   error $ "addwithNoXorExtension: number of bits must be the same, got " <> show
     (numBitsInVar v1, numBitsInVar v2)
-addWithNoXorExtension v1@(Var low1 _) (Var low2 _) use_carry = do
-  result <- int final_bits "add_result"
+addWithNoXorExtension v1@(Var low1 _) (Var low2 _) result use_carry = do
   go 0 result Nothing
   return result
  where
-  final_bits = if use_carry then numBitsInVar v1 + 1 else numBitsInVar v1
-
   go n result@(Var low3 high3) previous_overload | n < numBitsInVar v1 = do
     let is_last  = n == numBitsInVar v1 - 1
         idx_low1 = n + low1
@@ -611,3 +616,167 @@ allDistinct (a : rest) = do
 allEqualTo :: [Var] -> Var -> Arith ()
 allEqualTo []  _   = return ()
 allEqualTo lst tgt = for_ lst $ \b -> eqV b tgt
+
+-- | Shifts to right N bits, where bits come from a variable.
+--
+-- Note: current implementation also asserts that the value in the shifter is
+-- smaller than number of bits in the variable to be shifted.
+shiftRightV :: Var -> Var -> Arith Var
+shiftRightV shift v | numBitsInVar shift /= numBitsInVar v =
+  error "shiftRightV: number of bits is not equal."
+shiftRightV shift@(Var shift_low shift_high) v@(Var src_low src_high) = do
+  result@(Var low high) <- int (numBitsInVar v) "shiftRightV_result"
+  addBinFormula $ build_shift_formula 0 result
+  return result
+ where
+  build_shift_formula :: Int -> Var -> BinFormula
+  build_shift_formula num_shifts result@(Var low high) =
+    let inner = andd (shift_equals num_shifts) (shift_right num_shifts result)
+    in  if num_shifts < numBitsInVar result
+          then orr (build_shift_formula (num_shifts + 1) result) inner
+          else inner
+
+  shift_right num_shifts (Var low high) = anddL
+    [ let x = src_low + n + num_shifts
+      in  if x <= src_high
+            then iff (term x) (term (low + n))
+            else nott (term (low + n))
+    | n <- [0 .. numBitsInVar shift - 1]
+    ]
+
+  shift_equals num_shifts = anddL
+    [ if testBit num_shifts n
+        then term (shift_low + n)
+        else nott (term (shift_low + n))
+    | n <- [0 .. numBitsInVar shift - 1]
+    ]
+
+-- | Shifts to left N bits, where bits come from a variable.
+--
+-- Note: current implementation also asserts that the value in the shifter is
+-- smaller than number of bits in the variable to be shifted.
+shiftLeftV :: Var -> Var -> Arith Var
+shiftLeftV shift v | numBitsInVar shift /= numBitsInVar v =
+  error "shiftLeftV: number of bits is not equal."
+shiftLeftV shift@(Var shift_low shift_high) v@(Var src_low src_high) = do
+  result@(Var low high) <- int (numBitsInVar v) "shiftLeftV_result"
+  addBinFormula $ build_shift_formula 0 result
+  return result
+ where
+  build_shift_formula :: Int -> Var -> BinFormula
+  build_shift_formula num_shifts result@(Var low high) =
+    let inner = andd (shift_equals num_shifts) (shift_left num_shifts result)
+    in  if num_shifts < numBitsInVar result
+          then orr (build_shift_formula (num_shifts + 1) result) inner
+          else inner
+
+  shift_left num_shifts (Var low high) = andd
+    (anddL
+      [ iff (term (src_low + n)) (term (low + n + num_shifts))
+      | n <- [0 .. numBitsInVar shift]
+      , low + n + num_shifts <= high
+      ]
+    )
+    (anddL [ nott (term $ low + n) | n <- [0 .. num_shifts - 1] ])
+
+  shift_equals num_shifts = anddL
+    [ if testBit num_shifts n
+        then term (shift_low + n)
+        else nott (term (shift_low + n))
+    | n <- [0 .. numBitsInVar shift - 1]
+    ]
+
+-- | Shifts to right N bits. Bits on the left are zeroed.
+shiftLeft :: Int -> Var -> Arith Var
+shiftLeft n var | n < 0                 = shiftRight (negate n) var
+shiftLeft 0 var                         = return var
+shiftLeft n var | n >= numBitsInVar var = do
+  zeroes <- int (numBitsInVar var) "zeroes"
+  eq zeroes 0
+  return zeroes
+shiftLeft n var@(Var src_low _) = do
+  shifted@(Var low _high) <- int (numBitsInVar var) ("shiftedR" <> show n)
+  -- pad zeroes
+  for_ [0 .. (n - 1)] $ \idx -> do
+    addClause $ clause [No (idx + low)]
+  -- actual shifting is here
+  for_ [n .. (numBitsInVar var - 1)] $ \idx -> do
+    let shifted_idx = idx + low
+        src_idx     = (idx - n) + src_low
+    addBinFormula $ iff (term shifted_idx) (term src_idx)
+  return shifted
+
+-- | Shifts to left N bits. Bits on the left are zeroed.
+shiftRight :: Int -> Var -> Arith Var
+shiftRight n var | n < 0                 = shiftLeft (negate n) var
+shiftRight 0 var                         = return var
+shiftRight n var | n >= numBitsInVar var = do
+  zeroes <- int (numBitsInVar var) "zeroes"
+  eq zeroes 0
+  return zeroes
+shiftRight n var@(Var src_low _) = do
+  shifted@(Var low _high) <- int (numBitsInVar var) ("shiftedL" <> show n)
+  -- pad zeroes
+  for_ (take n [numBitsInVar var - 1, numBitsInVar var - 2 ..]) $ \idx -> do
+    addClause $ clause [No (idx + low)]
+  -- actual shifting is here
+  for_
+      (take (numBitsInVar var - n)
+            [numBitsInVar var - n - 1, numBitsInVar var - n - 2 ..]
+      )
+    $ \idx -> do
+        let shifted_idx = idx + low
+            src_idx     = shifted_idx + n - low + src_low
+        addBinFormula $ iff (term shifted_idx) (term src_idx)
+  return shifted
+
+-- | Performs a bit level NOT and returns the result.
+bitNot :: Var -> Arith Var
+bitNot v1@(Var low _) = do
+  result@(Var result_low result_high) <- int (numBitsInVar v1) "bitnot"
+  for_ [result_low .. result_high] $ \idx -> do
+    let low_idx = idx - result_low + low
+    addBinFormula $ iff (term low_idx) (nott (term idx))
+  return result
+
+-- | Performs a negation on an integer.
+--
+-- We don't really have signed integers but this will simulate negation in the
+-- same way as C uint32_t negation would work.
+signFlip :: Var -> Arith Var
+signFlip v1 = do
+  adder_ones <- int (numBitsInVar v1) "adder"
+  eq adder_ones ones
+  intermediate1 <- addNoCarry v1 adder_ones
+  bitNot intermediate1
+  where ones = foldl' (\v nbit -> setBit v nbit) 0 [0 .. numBitsInVar v1 - 1]
+
+-- | Performs a bit-level OR and returns the result.
+bitOr :: Var -> Var -> Arith Var
+bitOr v1 v2 | numBitsInVar v1 /= numBitsInVar v2 =
+  error "bitOr: number of bits doesn't match."
+bitOr v1@(Var low1 _) (Var low2 _) = do
+  result@(Var result_low result_high) <- int (numBitsInVar v1) "bitord"
+  for_ [result_low .. result_high] $ \idx -> do
+    let idx1 = low1 + idx - result_low
+        idx2 = low2 + idx - result_low
+    addBinFormula $ iff (orr (term idx1) (term idx2)) (term idx)
+  return result
+
+-- | Performs a bit-level OR and returns the result.
+bitAnd :: Var -> Var -> Arith Var
+bitAnd v1 v2 | numBitsInVar v1 /= numBitsInVar v2 =
+  error "bitAnd: number of bits doesn't match."
+bitAnd v1@(Var low1 _) (Var low2 _) = do
+  result@(Var result_low result_high) <- int (numBitsInVar v1) "bitandd"
+  for_ [result_low .. result_high] $ \idx -> do
+    let idx1 = low1 + idx - result_low
+        idx2 = low2 + idx - result_low
+    addBinFormula $ iff (andd (term idx1) (term idx2)) (term idx)
+  return result
+
+chop :: Var -> Int -> Arith Var
+chop var@(Var low _) num_bits | numBitsInVar var >= num_bits =
+  return $ Var low (low + num_bits - 1)
+chop _ _ = error "chop: can only remove bits."
+

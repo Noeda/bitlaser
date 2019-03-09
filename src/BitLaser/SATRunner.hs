@@ -109,14 +109,26 @@ consumeOutput pstdout solver_output = do
   result <-
     flip runStateT mempty
     $   runEffect
-    $   (  (P.concats ((P.fromHandle pstdout) ^. (P.splits 0xa)))
-        *> pure (SAT mempty)
-        )
+    $   (P.fromHandle pstdout *> pure (SAT mempty))
+    >-> liner
     >-> line_reader
   return $ case result of
     (SAT{}, st) -> SAT st
     (ret  , _ ) -> ret
  where
+  liner = go mempty
+   where
+    go line_accum = do
+      line <- await
+      let newline = line_accum <> line
+      yieldlines newline
+
+    yieldlines newline = case B.break (== 0xa) newline of
+      (_bs, right_bs) | B.null right_bs -> go newline
+      (bs, right_bs)                    -> do
+        yield bs
+        yieldlines (B.tail right_bs)
+
   line_reader = do
     line <- await
     if

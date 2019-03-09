@@ -115,14 +115,14 @@ subFormulas base formula =
 
 -- | Utility function that will combine lots of binary formulas with AND.
 anddL :: [BinFormula] -> BinFormula
-anddL []             = error "anddL: empty list"
+anddL []             = orr (term 1) (nott (term 1))
 anddL [x]            = x
 anddL [x, y]         = andd x y
 anddL (x : y : rest) = andd x (anddL (y : rest))
 
 -- | Utility function that will combine lots of binary formulas with OR.
 orrL :: [BinFormula] -> BinFormula
-orrL []             = error "orrL: empty list"
+orrL []             = orr (term 1) (nott (term 1))
 orrL [x]            = x
 orrL [x, y]         = orr x y
 orrL (x : y : rest) = orr x (orrL (y : rest))
