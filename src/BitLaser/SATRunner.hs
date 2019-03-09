@@ -13,6 +13,7 @@ module BitLaser.SATRunner
   , largestVariable
   , satSolve
   , noyes
+  , toDIMACS
   )
 where
 
@@ -161,6 +162,24 @@ consumeOutput pstdout solver_output = do
             immap
       (endOfInput *> pure new_terms) <|> go new_terms
 
+-- | Given a collection of clauses, outputs DIMACS.
+toDIMACS :: Foldable f => f Clause -> ImportantVariables -> BB.Builder
+toDIMACS clauses important_variables =
+  "c ind "
+    <> intercalateMonoid " " (fmap BB.intDec $ IS.toList important_variables)
+    <> " 0\n"
+    <> "p cnf "
+    <> BB.intDec largest_var
+    <> " "
+    <> BB.intDec nclauses
+    <> "\n"
+    <> foldl' (\builder clause -> builder <> clauseToDIMACS clause)
+              mempty
+              clauses
+ where
+  nclauses    = length $ toList clauses
+  largest_var = largestVariable clauses
+
 satSolve
   :: (Foldable f, MonadIO m)
   => Solver
@@ -183,19 +202,7 @@ satSolve solver clauses important_variables solver_output =
           hClose pstdout
 
     flip finally cleanup $ restore $ do
-      BB.hPutBuilder pstdin
-        $  "c ind "
-        <> intercalateMonoid " "
-                             (fmap BB.intDec $ IS.toList important_variables)
-        <> " 0\n"
-      BB.hPutBuilder pstdin
-        $  "p cnf "
-        <> BB.intDec largest_var
-        <> " "
-        <> BB.intDec nclauses
-        <> "\n"
-      for_ clauses $ \clause -> do
-        BB.hPutBuilder pstdin $ clauseToDIMACS clause
+      BB.hPutBuilder pstdin (toDIMACS clauses important_variables)
       hFlush pstdin
       hClose pstdin
 
@@ -207,6 +214,3 @@ satSolve solver clauses important_variables solver_output =
           error $ "SAT solver gave us unparseable output: " <> show unparsed
         SAT solution -> return $ Just solution
         UNSAT        -> return Nothing
- where
-  nclauses    = length $ toList clauses
-  largest_var = largestVariable clauses

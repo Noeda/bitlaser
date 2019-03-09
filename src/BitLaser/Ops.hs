@@ -6,6 +6,7 @@ module BitLaser.Ops
   , runArith
   , execArith
   , solveArith
+  , arithToDIMACS
   , XorExtension(..)
   , Var()
   , NumBits
@@ -56,6 +57,7 @@ import           BitLaser.SATRunner
 import           Control.Monad
 import           Control.Monad.Trans.State.Strict
 import           Data.Bits               hiding ( xor )
+import qualified Data.ByteString.Builder       as BB
 import qualified Data.ByteString.Char8         as B
 import           Data.Foldable
 import qualified Data.IntSet                   as IS
@@ -174,6 +176,13 @@ runArith (Arith st) xorextension =
 execArith :: Arith () -> XorExtension -> [Clause]
 execArith arith xorextension =
   let (clauses, _, _) = runArith arith xorextension in clauses
+
+-- | Turns an `Arith` model into DIMACS format.
+arithToDIMACS :: Arith () -> XorExtension -> BB.Builder
+arithToDIMACS arith xorextension =
+  let (clauses, _named_variables, important_variables) =
+        runArith arith xorextension
+  in  toDIMACS clauses important_variables
 
 -- | Runs and solves `Arith` model, prints results to standard output.
 solveArith :: Arith () -> XorExtension -> Solver -> IO ()
@@ -624,19 +633,19 @@ allEqualTo lst tgt = for_ lst $ \b -> eqV b tgt
 shiftRightV :: Var -> Var -> Arith Var
 shiftRightV shift v | numBitsInVar shift /= numBitsInVar v =
   error "shiftRightV: number of bits is not equal."
-shiftRightV shift@(Var shift_low shift_high) v@(Var src_low src_high) = do
-  result@(Var low high) <- int (numBitsInVar v) "shiftRightV_result"
+shiftRightV shift@(Var shift_low _shift_high) v@(Var src_low src_high) = do
+  result <- int (numBitsInVar v) "shiftRightV_result"
   addBinFormula $ build_shift_formula 0 result
   return result
  where
   build_shift_formula :: Int -> Var -> BinFormula
-  build_shift_formula num_shifts result@(Var low high) =
+  build_shift_formula num_shifts result =
     let inner = andd (shift_equals num_shifts) (shift_right num_shifts result)
     in  if num_shifts < numBitsInVar result
           then orr (build_shift_formula (num_shifts + 1) result) inner
           else inner
 
-  shift_right num_shifts (Var low high) = anddL
+  shift_right num_shifts (Var low _high) = anddL
     [ let x = src_low + n + num_shifts
       in  if x <= src_high
             then iff (term x) (term (low + n))
@@ -658,13 +667,13 @@ shiftRightV shift@(Var shift_low shift_high) v@(Var src_low src_high) = do
 shiftLeftV :: Var -> Var -> Arith Var
 shiftLeftV shift v | numBitsInVar shift /= numBitsInVar v =
   error "shiftLeftV: number of bits is not equal."
-shiftLeftV shift@(Var shift_low shift_high) v@(Var src_low src_high) = do
-  result@(Var low high) <- int (numBitsInVar v) "shiftLeftV_result"
+shiftLeftV shift@(Var shift_low _shift_high) v@(Var src_low _src_high) = do
+  result <- int (numBitsInVar v) "shiftLeftV_result"
   addBinFormula $ build_shift_formula 0 result
   return result
  where
   build_shift_formula :: Int -> Var -> BinFormula
-  build_shift_formula num_shifts result@(Var low high) =
+  build_shift_formula num_shifts result =
     let inner = andd (shift_equals num_shifts) (shift_left num_shifts result)
     in  if num_shifts < numBitsInVar result
           then orr (build_shift_formula (num_shifts + 1) result) inner
