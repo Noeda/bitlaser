@@ -10,6 +10,10 @@ I'm using this for bunch of my personal projects where I'm trying to solve
 various problems. I would not consider this a complete project I would
 recommend for generel use.
 
+It expects a SAT solver on command line. You pass the desired SAT solver to
+`solveArith` function (see example below). Any SAT solver that supports DIMACS
+should work but you will need to add it to `Solvers` type.
+
 Here's an example to solve a magic square, with 12-bit unsigned integers.
 
 ```haskell
